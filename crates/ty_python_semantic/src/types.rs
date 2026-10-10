@@ -5515,6 +5515,44 @@ impl<'db> Type<'db> {
             return fallback;
         }
 
+        // Instance storage can reuse a class method's declaration as its write contract.
+        // Bind only that method, using the actual receiver to specialize `Self` and type
+        // variables. A conditional declaration can also include inferred instance functions;
+        // those functions, and annotations with no corresponding class method, must not bind.
+        let fallback_member = if policy == InstanceFallbackShadowsNonDataDescriptor::No
+            && let Some(class_ty) = meta_attr_ty
+        {
+            let class_ty = class_ty.resolve_type_alias(db);
+            fallback_member.map_type(|ty| {
+                let bind_method_contract = |alternative: &Type<'db>| {
+                    let method_ty = alternative.resolve_type_alias(db);
+                    let Type::FunctionLiteral(function) = method_ty else {
+                        return *alternative;
+                    };
+                    let matches_class_declaration = match class_ty {
+                        Type::Union(union) => union.elements(db).contains(&method_ty),
+                        class_ty => class_ty == method_ty,
+                    };
+                    if matches_class_declaration
+                        && function.callable_type_kind(db)
+                            == callable::CallableTypeKind::FunctionLike
+                    {
+                        method_ty
+                            .function_like_dunder_get(db, env, Some(receiver), Some(owner))
+                            .unwrap_or(*alternative)
+                    } else {
+                        *alternative
+                    }
+                };
+                match ty.resolve_type_alias(db) {
+                    Type::Union(union) => union.map_leave_aliases(db, env, bind_method_contract),
+                    _ => bind_method_contract(&ty),
+                }
+            })
+        } else {
+            fallback_member
+        };
+
         let PlaceAndQualifiers {
             place: fallback,
             qualifiers: fallback_qualifiers,

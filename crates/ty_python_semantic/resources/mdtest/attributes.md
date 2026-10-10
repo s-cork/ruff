@@ -1533,6 +1533,171 @@ DescriptorMethods.static = static_replacement  # error: [invalid-assignment]
 DescriptorMethods.class_ = class_replacement  # error: [invalid-assignment]
 ```
 
+## Shadowing instance methods on instances
+
+A function stored on an instance shadows the class method without binding another receiver. Its
+signature must remain compatible with the bound method it replaces.
+
+```py
+def replacement(row: dict[str, int], field: str, /) -> int:
+    return row[field]
+
+class Loader:
+    def __init__(self):
+        self.get_index = replacement  # no diagnostic
+
+    def get_index(self, row: dict[str, int], field: str, /) -> int:
+        return row[field]
+
+    def read(self) -> int:
+        return self.get_index({"id": 42}, "id")  # no diagnostic
+
+reveal_type(Loader().get_index({"id": 42}, "id"))  # revealed: int
+Loader().get_index({"id": 42}, 42)  # error: [invalid-argument-type]
+Loader.get_index = replacement  # error: [invalid-assignment]
+```
+
+## Shadowing inherited methods on instances
+
+Inherited methods and explicitly typed receivers retain the bound signature contract. Invalid
+replacement parameters and return types are rejected.
+
+```py
+def replacement(value: int) -> str:
+    return str(value)
+
+def wrong_return(value: int) -> int:
+    return value
+
+def wrong_parameter(value: str) -> str:
+    return value
+
+def wrong_keyword(other: int) -> str:
+    return str(other)
+
+class Base:
+    def decode(self, value: int) -> str:
+        return str(value)
+
+class Child(Base):
+    def __init__(self):
+        self.decode = replacement  # no diagnostic
+
+reveal_type(Child().decode(42))  # revealed: str
+# Both the inherited descriptor and instance-storage alternative reject this argument.
+# error: [invalid-argument-type]
+Child().decode("wrong")  # error: [invalid-argument-type]
+
+def reset(base: Base) -> None:
+    base.decode = replacement  # no diagnostic
+    reveal_type(base.decode(42))  # revealed: str
+    base.decode = wrong_return  # error: [invalid-assignment]
+    base.decode = wrong_parameter  # error: [invalid-assignment]
+    base.decode = wrong_keyword  # error: [invalid-assignment]
+```
+
+## Shadowing methods returning Self on instances
+
+Instance storage retains `Self` until lookup through the concrete receiver, including subclasses.
+
+```py
+from typing_extensions import Self
+
+class Base:
+    def __init__(self):
+        self.copy = self.replacement  # no diagnostic
+
+    def copy(self) -> Self:
+        return self
+
+    def replacement(self) -> Self:
+        return self
+
+class Child(Base): ...
+
+reveal_type(Base().copy())  # revealed: Base
+reveal_type(Child().copy())  # revealed: Child
+child: Child = Child().copy()  # no diagnostic
+```
+
+## Shadowing conditionally defined methods on instances
+
+Each possible method definition contributes its bound signature to the instance-storage contract.
+
+```py
+def flag() -> bool:
+    return True
+
+def replacement(value: int) -> str:
+    return str(value)
+
+class Base:
+    if flag():
+        def decode(self, value: int) -> str:
+            return str(value)
+
+    else:
+        def decode(self, value: int) -> str:
+            return str(value)
+
+    def __init__(self):
+        self.decode = replacement  # no diagnostic
+
+    def read(self) -> str:
+        return self.decode(42)  # no diagnostic
+
+reveal_type(Base().decode(42))  # revealed: str
+# Both conditional method definitions reject the argument.
+# error: [invalid-argument-type]
+Base().decode("wrong")  # error: [invalid-argument-type]
+```
+
+## Shadowing a possibly declared method on an instance
+
+A replacement stored on the instance keeps its signature even when the class method is only
+conditionally declared.
+
+```py
+def flag() -> bool:
+    return True
+
+def replacement(value: int) -> str:
+    return str(value)
+
+class Base:
+    if flag():
+        def decode(self, value: int) -> str:
+            return str(value)
+
+    def __init__(self):
+        self.decode = replacement  # error: [possibly-missing-attribute]
+
+    def read(self) -> str:
+        return self.decode(42)  # error: [possibly-missing-attribute]
+
+# error: [possibly-missing-attribute]
+reveal_type(Base().decode(42))  # revealed: str
+```
+
+## Annotated functions stored only on instances
+
+An explicit function-literal annotation on an instance attribute does not make that function bind an
+instance argument.
+
+```py
+from ty_extensions._internal import TypeOf
+
+def replacement(value: int) -> str:
+    return str(value)
+
+class Container:
+    def __init__(self):
+        self.callback: TypeOf[replacement] = replacement
+
+reveal_type(Container().callback(42))  # revealed: str
+Container().callback("wrong")  # error: [invalid-argument-type]
+```
+
 ## Shadowing static methods on instances
 
 ### Nominal instances
@@ -3730,7 +3895,8 @@ c = C()
 reveal_type(c.x)  # revealed: int
 ```
 
-Like all dunder methods, `__getattribute__` is not looked up on instances:
+Like all dunder methods, `__getattribute__` is not looked up on instances. Shadowing the bound
+method with a compatible callable does not change special-method lookup:
 
 ```py
 def external_getattribute(name) -> int:
@@ -3738,8 +3904,7 @@ def external_getattribute(name) -> int:
 
 class ThisFails:
     def __init__(self):
-        # error: [invalid-assignment]
-        self.__getattribute__ = external_getattribute
+        self.__getattribute__ = external_getattribute  # no diagnostic
 
 # error: [unresolved-attribute]
 ThisFails().x

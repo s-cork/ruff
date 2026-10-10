@@ -116,7 +116,9 @@ AlsoConcreteOrdered()
 
 We also allow abstract methods or properties to be "overridden" by a `ClassVar` annotation, even if
 it is not accompanied by a binding in the class body: we assume that a class like this will have the
-override added dynamically (e.g., by a metaclass):
+override added dynamically (e.g., by a metaclass). The class-only declaration of `g` still fails
+mutable-override checking because it cannot accept the instance-method replacements permitted by the
+base:
 
 ```py
 from typing import ClassVar, Callable
@@ -130,7 +132,7 @@ class AbstractDynamic(ABC):
 
 class ConcreteDynamic(AbstractDynamic):
     f: ClassVar[int]
-    g: ClassVar[Callable[..., str]]
+    g: ClassVar[Callable[..., str]]  # error: [invalid-mutable-override]
 
 ConcreteDynamic()  # no diagnostic
 ```

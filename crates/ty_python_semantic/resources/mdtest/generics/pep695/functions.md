@@ -3811,5 +3811,27 @@ class BoundedSetter(Base):
     def value[I: int](self, value: I) -> None: ...  # error: [invalid-property-type-override]
 ```
 
+## Instance method replacement retains receiver type variables
+
+A method's receiver determines the generic result even when instance storage shadows that method.
+
+```py
+class Base:
+    def __init__(self):
+        self.copy = self.replacement  # no diagnostic
+
+    def copy[T](self: T) -> T:
+        return self
+
+    def replacement[T](self: T) -> T:
+        return self
+
+class Child(Base): ...
+
+reveal_type(Child().copy())  # revealed: Child
+child: Child = Child().copy()  # no diagnostic
+wrong: str = Child().copy()  # error: [invalid-assignment]
+```
+
 [implies_subtype_of]: ../../type_properties/implies_subtype_of.md
 [ty#2371]: https://github.com/astral-sh/ty/issues/2371

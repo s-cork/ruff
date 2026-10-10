@@ -400,7 +400,8 @@ class AlwaysTrue:
         return True
 
 class A:
-    __eq__: AlwaysTrue = AlwaysTrue()
+    # This field cannot accept all compatible callable replacements permitted by object.__eq__.
+    __eq__: AlwaysTrue = AlwaysTrue()  # error: [invalid-mutable-override]
     __lt__: AlwaysTrue = AlwaysTrue()
 
 reveal_type(A() == A())  # revealed: Literal[True]

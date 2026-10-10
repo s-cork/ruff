@@ -3167,3 +3167,29 @@ class BoundedSetter(Base):
     @value.setter
     def value(self, value: I) -> None: ...  # error: [invalid-property-type-override]
 ```
+
+## Instance method replacement retains receiver type variables
+
+A method's receiver determines the generic result even when instance storage shadows that method.
+
+```py
+from typing import TypeVar
+
+T = TypeVar("T")
+
+class Base:
+    def __init__(self):
+        self.copy = self.replacement  # no diagnostic
+
+    def copy(self: T) -> T:
+        return self
+
+    def replacement(self: T) -> T:
+        return self
+
+class Child(Base): ...
+
+reveal_type(Child().copy())  # revealed: Child
+child: Child = Child().copy()  # no diagnostic
+wrong: str = Child().copy()  # error: [invalid-assignment]
+```

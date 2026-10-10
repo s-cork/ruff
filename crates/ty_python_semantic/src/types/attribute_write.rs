@@ -682,33 +682,46 @@ fn explicit_attribute_write_requirement<'db>(
                 env,
                 object_ty,
                 attribute,
-                shadowed_descriptor_write_type(db, env, attr_ty),
+                shadowed_descriptor_write_type(db, env, object_ty, attr_ty),
             ),
             qualifiers,
         }
     }
 }
 
-/// A staticmethod found on the receiver's type can be shadowed by its underlying function.
+/// A method found on the receiver's type can be shadowed by a compatible instance callable.
 /// This also applies to a class object shadowing a staticmethod on its metaclass. Replacing a
 /// descriptor in the owner's namespace instead goes through the receiver fallback and retains
 /// the descriptor type.
+/// Ordinary functions written to a class namespace remain unbound: subsequent instance access
+/// can bind them as methods of that class.
 fn shadowed_descriptor_write_type<'db>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
+    object_ty: Type<'db>,
     attr_ty: Type<'db>,
 ) -> Type<'db> {
     match attr_ty {
-        Type::Union(union) => {
-            union.map_leave_aliases(db, env, |ty| shadowed_descriptor_write_type(db, env, *ty))
-        }
+        Type::Union(union) => union.map_leave_aliases(db, env, |ty| {
+            shadowed_descriptor_write_type(db, env, object_ty, *ty)
+        }),
         Type::TypeAlias(alias) => {
             let value = alias.value_type(db);
-            let write_ty = shadowed_descriptor_write_type(db, env, value);
+            let write_ty = shadowed_descriptor_write_type(db, env, object_ty, value);
             if write_ty == value { attr_ty } else { write_ty }
         }
         _ if attr_ty.function_like_kind(db) == Some(CallableTypeKind::StaticMethodLike) => {
             attr_ty.underlying_function(db)
+        }
+        Type::FunctionLiteral(function)
+            if function.callable_type_kind(db) == CallableTypeKind::FunctionLike
+                && object_ty.to_instance_approximation(db, env).is_none() =>
+        {
+            Type::Callable(
+                function
+                    .into_callable_type(db)
+                    .bind_self(db, env, object_ty, object_ty),
+            )
         }
         _ => attr_ty,
     }
