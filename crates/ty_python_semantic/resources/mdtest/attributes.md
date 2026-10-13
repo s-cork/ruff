@@ -1507,13 +1507,8 @@ Foo.add = incompatible_replacement  # error: [invalid-assignment]
 
 ## Replacing methods through a subclass receiver
 
-An ordinary method can also be replaced through `type[Base]`, including the implicit class receiver
-of `__init_subclass__`. The replacement must still accept a base instance and retain the original
-parameter and return types.
-
-The replacement must also retain ordinary function binding. A bound method with the same signature
-does not bind the base instance again after assignment to the class. Lambdas still receive the
-original signature's parameter types, so an incompatible inferred return is rejected.
+A method can be replaced through `type[Base]`, including `cls` in `__init_subclass__`. The
+replacement accepts a base instance and has a compatible signature.
 
 ```py
 class Base:
@@ -1526,6 +1521,16 @@ class Base:
 
         cls.method = replacement  # no diagnostic
 
+class Child(Base): ...
+
+reveal_type(Child().method(1))  # revealed: str
+Child().method("wrong")  # error: [invalid-argument-type]
+```
+
+Assignments through an explicit class parameter follow the same rule. Returning an integer where
+callers expect a string is still an error.
+
+```py
 def replacement(self: Base, value: int) -> str:
     return str(value)
 
@@ -1534,29 +1539,127 @@ def incompatible(self: Base, value: int) -> int:
 
 def patch(cls: type[Base]) -> None:
     cls.method = replacement  # no diagnostic
-    cls.method = incompatible  # error: [invalid-assignment]
+    cls.method = incompatible  # snapshot
+```
 
-class Child(Base): ...
+```snapshot
+error[invalid-assignment]: Object of type `def incompatible(self: Base, value: int) -> int` is not assignable to attribute `method` of type `(self, value: int) -> str`
+  --> src/mdtest_snippet.py:23:5
+   |
+23 |     cls.method = incompatible  # snapshot
+   |     ^^^^^^^^^^
+info: incompatible return types: `int` is not assignable to `str`
+```
 
-reveal_type(Child().method(1))  # revealed: str
-Child().method("wrong")  # error: [invalid-argument-type]
+A replacement that only accepts `Child` instances cannot be assigned through `type[Base]`, since the
+class parameter could be `Base` or a different subclass.
 
+```py
 def child_only(self: Child, value: int) -> str:
     return str(value)
 
 def patch_base(cls: type[Base]) -> None:
     cls.method = child_only  # error: [invalid-assignment]
+```
+
+## Replacing a method with a bound method
+
+Matching call signatures alone are not enough. A function assigned to a class binds the instance
+when accessed through that instance; an already-bound method does not bind again. Here, assigning
+`Other().replacement` would leave `Base().method(1)` missing its `value` argument. We reject the
+assignment through both an exact class and a class parameter.
+
+```py
+class Base:
+    def method(self, value: int) -> str:
+        return str(value)
 
 class Other:
     def replacement(owner, self: Base, value: int) -> str:
         return str(value)
 
 def patch_bound(cls: type[Base]) -> None:
-    cls.method = Other().replacement  # error: [invalid-assignment]
+    cls.method = Other().replacement  # snapshot
 
 Base.method = Other().replacement  # error: [invalid-assignment]
+```
 
-Base.method = lambda self, value: str(value)  # no diagnostic
+```snapshot
+error[invalid-assignment]: Attribute `method` requires a function, but this value has type `bound method Other.replacement(self: Base, value: int) -> str`
+  --> src/mdtest_snippet.py:10:5
+   |
+10 |     cls.method = Other().replacement  # snapshot
+   |     ^^^^^^^^^^
+info: A function assigned to a class binds the instance as its first argument. An already-bound method does not bind another instance.
+```
+
+## Replacing a method with a callable of unknown binding behavior
+
+A `Callable` annotation describes the call signature, but does not guarantee that the value is a
+function. When the signature is also incompatible, the diagnostic explains that mismatch first.
+
+```py
+from collections.abc import Callable
+
+class Compiler:
+    def compile(self, sources: object, /) -> None:
+        pass
+
+def make_compiler() -> Callable[[Compiler, str], None]:
+    def compile(self: Compiler, sources: str, /) -> None:
+        pass
+    return compile
+
+Compiler.compile = make_compiler()  # snapshot
+```
+
+```snapshot
+error[invalid-assignment]: Object of type `(Compiler, str, /) -> None` is not assignable to attribute `compile` of type `(self, sources: object, /) -> None`
+  --> src/mdtest_snippet.py:12:1
+   |
+12 | Compiler.compile = make_compiler()  # snapshot
+   | ^^^^^^^^^^^^^^^^
+info: parameter `sources` has an incompatible type: `object` is not assignable to `str`
+```
+
+A compatible signature still does not establish that the value is a function. A bound method or a
+callable object can have the same annotation.
+
+Method replacement checking currently rejects values annotated only as `Callable`, even when the
+factory returns a plain function. This also applies to concrete classes. Possible heuristics for
+these annotations are discussed in [#491](https://github.com/astral-sh/ty/issues/491) and
+[#4074](https://github.com/astral-sh/ty/issues/4074).
+
+```py
+def make_compatible_compiler() -> Callable[[Compiler, object], None]:
+    def compile(self: Compiler, sources: object, /) -> None:
+        pass
+    return compile
+
+Compiler.compile = make_compatible_compiler()  # snapshot
+```
+
+```snapshot
+error[invalid-assignment]: Attribute `compile` requires a function, but this value has type `(Compiler, object, /) -> None`
+  --> src/mdtest_snippet.py:18:1
+   |
+18 | Compiler.compile = make_compatible_compiler()  # snapshot
+   | ^^^^^^^^^^^^^^^^
+info: A callable signature does not guarantee that the value is a function that binds the instance when assigned to a class.
+```
+
+## Lambda replacements retain contextual parameter types
+
+The method signature gives lambda parameters their types. This lets us check the body and reject a
+return value that does not match the method's return type.
+
+```py
+class Base:
+    def method(self, value: int) -> str:
+        return str(value)
+
+Base.method = lambda self, value: str(value.bit_length())  # no diagnostic
+Base.method = lambda self, value: value.upper()  # error: [unresolved-attribute]
 Base.method = lambda self, value: value  # error: [invalid-assignment]
 
 def patch_lambda(cls: type[Base]) -> None:

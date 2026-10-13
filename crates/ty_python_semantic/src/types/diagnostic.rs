@@ -2301,11 +2301,11 @@ pub(super) fn report_unsound_assignment<'db>(
     diagnostic.help("Consider using an `assert` to narrow the type before assigning it");
 }
 
-pub(super) fn report_invalid_attribute_assignment(
-    context: &InferContext,
+pub(super) fn report_invalid_attribute_assignment<'db>(
+    context: &InferContext<'db, '_>,
     range: TextRange,
-    target_ty: Type,
-    source_ty: Type,
+    mut target_ty: Type<'db>,
+    source_ty: Type<'db>,
     attribute_name: &'_ str,
 ) {
     let db = context.db();
@@ -2315,6 +2315,45 @@ pub(super) fn report_invalid_attribute_assignment(
     // diagnostic being emitted here.
 
     let env = &context.program_environment();
+    // Method replacements have both a callable signature and a FunctionType constraint.
+    // Prefer a signature mismatch, even if the source also fails the FunctionType constraint.
+    // Only explain function binding when the signature fits, without exposing the intersection.
+    // For an opaque Callable, failure to satisfy FunctionType does not prove the runtime value
+    // is not a function; distinguish that missing information from a known bound method.
+    let function_ty = KnownClass::FunctionType.to_instance(db, env);
+    if let Type::Intersection(intersection) = target_ty
+        && intersection.positive(db).len() == 2
+        && intersection.negative(db).is_empty()
+        && intersection.positive(db).contains(&function_ty)
+        && let Some(callable) = intersection.iter_positive(db).find_map(Type::as_callable)
+    {
+        target_ty = Type::Callable(callable);
+        if source_ty.is_assignable_to(db, env, target_ty)
+            && !source_ty.is_assignable_to(db, env, function_ty)
+        {
+            if let Some(mut diag) = report_invalid_assignment_with_message(
+                context,
+                range,
+                format_args!(
+                    "Attribute `{attribute_name}` requires a function, but this value has type `{}`",
+                    source_ty.display(db, env),
+                ),
+            ) {
+                if matches!(source_ty, Type::BoundMethod(_) | Type::KnownBoundMethod(_)) {
+                    diag.info(
+                        "A function assigned to a class binds the instance as its first argument. \
+                        An already-bound method does not bind another instance.",
+                    );
+                } else {
+                    diag.info(
+                        "A callable signature does not guarantee that the value is a function \
+                        that binds the instance when assigned to a class.",
+                    );
+                }
+            }
+            return;
+        }
+    }
     let settings = DisplaySettings::from_possibly_ambiguous_types(db, env, [source_ty, target_ty]);
     let Some(mut diag) = report_invalid_assignment_with_message(
         context,

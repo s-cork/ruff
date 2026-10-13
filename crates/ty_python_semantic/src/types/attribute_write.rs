@@ -777,8 +777,15 @@ fn class_fallback_write_requirement<'db>(
         && let Type::FunctionLiteral(function) = ty
         && function.callable_type_kind(db) == CallableTypeKind::FunctionLike
     {
-        // A class replacement must bind an instance like the original function. Signature
-        // compatibility alone would also accept bound methods, which do not bind again.
+        // A replacement must bind an instance like the original function. For example, a bound
+        // `Other().replacement` can have the same `(self: Base, value: int) -> str` signature as
+        // `Base.method`, but assigning it to `Base.method` does not bind a Base instance again.
+        // `Base().method(1)` would therefore leave its `value` argument missing.
+        //
+        // FunctionType also preserves the existing rejection of values annotated only as
+        // Callable on exact classes. Those values can be functions at runtime, but the annotation
+        // does not retain that information. Possible binding heuristics are discussed in
+        // https://github.com/astral-sh/ty/issues/491 and https://github.com/astral-sh/ty/issues/4074.
         IntersectionBuilder::new(db, env)
             .add_positive(Type::Callable(
                 function.into_callable_type(db).into_regular(db),

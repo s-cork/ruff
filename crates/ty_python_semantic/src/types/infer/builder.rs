@@ -8768,16 +8768,14 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             match ty.resolve_type_alias(db) {
                 Type::Callable(callable) => Some(callable),
                 Type::Intersection(intersection) => {
-                    // A callable signature can carry an additional nominal constraint, such
-                    // as FunctionType for class-method replacements. Retain its lambda context.
-                    let mut callables = intersection
+                    // FunctionType requires a function without supplying parameter types.
+                    // A single Callable still supplies the lambda's parameter types. Multiple
+                    // Callables need multi-inference; choosing one would discard the others.
+                    intersection
                         .iter_positive(db)
-                        .filter_map(|ty| ty.resolve_type_alias(db).as_callable());
-                    let callable = callables.next()?;
-                    if callables.next().is_some() {
-                        return None;
-                    }
-                    Some(callable)
+                        .filter_map(|ty| ty.resolve_type_alias(db).as_callable())
+                        .exactly_one()
+                        .ok()
                 }
                 _ => None,
             }
